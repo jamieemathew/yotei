@@ -1,9 +1,10 @@
 import streamlit as st
+import sqlite3
 from langchain_community.llms import Ollama
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-import datetime
 
+# Initialize the Ollama model from langchain
 @st.cache_resource
 def initialize_llm():
     return Ollama(model="llama2")
@@ -11,7 +12,7 @@ def initialize_llm():
 # Initialize Ollama LLM
 llm = initialize_llm()
 
-# Define the prompt template
+# Define the prompt template for the chatbot
 prompt = PromptTemplate(
     input_variables=["chat_history"],
     template=(
@@ -22,42 +23,131 @@ prompt = PromptTemplate(
     ),
 )
 
-# Create the LLMChain
+# Create the LLMChain for the chatbot
 chain = LLMChain(llm=llm, prompt=prompt)
 
-st.title("Doctor Appointment Chatbot")
+# Function to create a connection to SQLite database
+def create_connection():
+    conn = sqlite3.connect('appointments.db')
+    return conn
 
-# Initialize session state
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [
-        {"role": "assistant", "content": "Hello! Would you like to book an appointment?"}
-    ]
-if "appointment_info" not in st.session_state:
-    st.session_state.appointment_info = {"name": "", "date": "", "time": "", "doctor": ""}
-if "user_input" not in st.session_state:
-    st.session_state.user_input = ""
+# Function to fetch appointments for a clinic from the database
+def fetch_appointments(clinic_id):
+    conn = create_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM appointments WHERE clinic_id = ?', (clinic_id,))
+    appointments = cursor.fetchall()
+    conn.close()
+    return appointments
 
-# Function to process user input
-def process_input(user_input):
-    if user_input:
-        # Add user input to chat history
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+# Function to insert a new clinic into the database
+def insert_clinic(clinic_id, clinic_name, password):
+    conn = create_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO clinics (clinic_id, clinic_name, password)
+        VALUES (?, ?, ?)
+    ''', (clinic_id, clinic_name, password))
+    conn.commit()
+    conn.close()
 
-        # Generate response from LLM
-        chat_history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in st.session_state.chat_history])
-        response = chain.run(chat_history=chat_history)
+# Function to authenticate clinic based on clinic ID and password
+def authenticate_clinic(clinic_id, password):
+    conn = create_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM clinics WHERE clinic_id = ? AND password = ?', (clinic_id, password))
+    clinic = cursor.fetchone()
+    conn.close()
+    return True if clinic else False
 
-        # Add AI response to chat history
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
+# Streamlit application main function
+def main():
+    st.title("Yotei")
 
-# Display chat messages
-for message in st.session_state.chat_history:
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
+    # Sidebar for navigation
+    st.sidebar.title("Navigation")
+    selection = st.sidebar.radio("Go to", ["Chatbot", "Login and View Appointments", "Clinic Registration"])
 
-# Chat input
-user_input = st.chat_input("Type your message here...")
+    # Display selected page
+    if selection == "Chatbot":
+        chatbot_page()
+    elif selection == "Login and View Appointments":
+        login_page()
+    elif selection == "Clinic Registration":
+        registration_page()
 
-if user_input:
-    process_input(user_input)
-    st.experimental_rerun()
+# Chatbot page
+def chatbot_page():
+    st.title("Doctor Appointment Chatbot")
+
+    # Initialize or retrieve chat history from session state
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            {"role": "assistant", "content": "Hello! Would you like to book an appointment?"}
+        ]
+
+    # Display chat messages
+    for message in st.session_state.chat_history:
+        if message["role"] == "assistant":
+            st.text_area("Assistant", value=message["content"], height=100, disabled=True)
+        elif message["role"] == "user":
+            st.text_area("You", value=message["content"], height=100, disabled=True)
+
+    # Chat input
+    user_input = st.text_input("Type your message here...")
+
+    if st.button("Send"):
+        if user_input:
+            # Add user input to chat history
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+
+            # Generate response from LLM
+            chat_history = "\n".join([f"{msg['role']}: {msg['content']}" for msg in st.session_state.chat_history])
+            response = chain.run(chat_history=chat_history)
+
+            # Add AI response to chat history
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+# Login and database view page
+def login_page():
+    st.title("Clinic Login")
+
+    # Clinic login form
+    clinic_id = st.text_input("Clinic ID")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        # Authentication logic
+        if authenticate_clinic(clinic_id, password):
+            st.success("Logged in successfully!")
+            display_appointments(clinic_id)
+        else:
+            st.error("Invalid credentials. Please try again.")
+
+# Function to display appointments for a logged-in clinic
+def display_appointments(clinic_id):
+    st.title("Clinic Appointments")
+
+    # Fetch appointments
+    appointments = fetch_appointments(clinic_id)
+
+    if appointments:
+        st.write("Your Appointments:")
+        for appointment in appointments:
+            st.write(f"Name: {appointment[2]}, Date: {appointment[3]}, Time: {appointment[4]}, Doctor: {appointment[5]}")
+    else:
+        st.write("No appointments found.")
+
+# Clinic registration page
+def registration_page():
+    st.title("Clinic Registration")
+
+    # Clinic registration form
+    clinic_name = st.text_input("Clinic Name")
+    clinic_id = st.text_input("Clinic ID")
+    password = st.text_input("Password", type="password")
+    if st.button("Register"):
+        insert_clinic(clinic_id, clinic_name, password)
+        st.success("Clinic registered successfully!")
+
+if __name__ == "__main__":
+    main()
